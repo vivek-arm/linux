@@ -16,6 +16,7 @@
 #define VIRTIO_IOMMU_F_BYPASS			3
 #define VIRTIO_IOMMU_F_PROBE			4
 #define VIRTIO_IOMMU_F_MMIO			5
+#define VIRTIO_IOMMU_F_ATTACH_TABLE		6
 
 struct virtio_iommu_range_64 {
 	__le64					start;
@@ -44,6 +45,8 @@ struct virtio_iommu_config {
 #define VIRTIO_IOMMU_T_MAP			0x03
 #define VIRTIO_IOMMU_T_UNMAP			0x04
 #define VIRTIO_IOMMU_T_PROBE			0x05
+#define VIRTIO_IOMMU_T_ATTACH_TABLE		0x06
+#define VIRTIO_IOMMU_T_INVALIDATE		0x07
 
 /* Status types */
 #define VIRTIO_IOMMU_S_OK			0x00
@@ -79,6 +82,37 @@ struct virtio_iommu_req_detach {
 	__le32					domain;
 	__le32					endpoint;
 	__u8					reserved[8];
+	struct virtio_iommu_req_tail		tail;
+};
+
+struct virtio_iommu_req_attach_table {
+	struct virtio_iommu_req_head		head;
+	__le32					domain;
+	__le32					endpoint;
+	__le16					format;
+	__u8					reserved[62];
+	struct virtio_iommu_req_tail		tail;
+};
+
+#define VIRTIO_IOMMU_PSTF_ARM_SMMU_V3_LINEAR	0x0
+#define VIRTIO_IOMMU_PSTF_ARM_SMMU_V3_4KL2	0x1
+#define VIRTIO_IOMMU_PSTF_ARM_SMMU_V3_64KL2	0x2
+
+#define VIRTIO_IOMMU_PSTF_ARM_SMMU_V3_DSS_TERM	0x0
+#define VIRTIO_IOMMU_PSTF_ARM_SMMU_V3_DSS_BYPASS 0x1
+#define VIRTIO_IOMMU_PSTF_ARM_SMMU_V3_DSS_0	0x2
+
+/* Arm SMMUv3 PASID Table Descriptor */
+struct virtio_iommu_req_attach_pst_arm {
+	struct virtio_iommu_req_head		head;
+	__le32					domain;
+	__le32					endpoint;
+	__le16					format;
+	__u8					s1fmt;
+	__u8					s1dss;
+	__le64					s1contextptr;
+	__le32					s1cdmax;
+	__u8					reserved[48];
 	struct virtio_iommu_req_tail		tail;
 };
 
@@ -186,6 +220,40 @@ struct virtio_iommu_req_probe {
 	 * Tail follows the variable-length properties array. No padding,
 	 * property lengths are all aligned on 8 bytes.
 	 */
+};
+
+#define VIRTIO_IOMMU_INVAL_G_DOMAIN		(1 << 0)
+#define VIRTIO_IOMMU_INVAL_G_PASID		(1 << 1)
+#define VIRTIO_IOMMU_INVAL_G_VA			(1 << 2)
+
+#define VIRTIO_IOMMU_INV_T_IOTLB		(1 << 0)
+#define VIRTIO_IOMMU_INV_T_DEV_IOTLB		(1 << 1)
+#define VIRTIO_IOMMU_INV_T_PASID		(1 << 2)
+
+#define VIRTIO_IOMMU_INVAL_F_PASID		(1 << 0)
+#define VIRTIO_IOMMU_INVAL_F_ARCHID		(1 << 1)
+#define VIRTIO_IOMMU_INVAL_F_LEAF		(1 << 2)
+
+struct virtio_iommu_req_invalidate {
+	struct virtio_iommu_req_head		head;
+	__le16					inv_gran;
+	__le16					inv_type;
+
+	__le16					flags;
+	__u8					reserved1[2];
+	__le32					domain;
+
+	__le32					pasid;
+	__u8					reserved2[4];
+
+	__le64					archid;
+	__le64					virt_start;
+	__le64					nr_pages;
+
+	/* Page size, in nr of bits, typically 12 for 4k, 30 for 2MB, etc.) */
+	__u8					granule;
+	__u8					reserved3[11];
+	struct virtio_iommu_req_tail		tail;
 };
 
 /* Fault types */
