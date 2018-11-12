@@ -135,6 +135,13 @@ struct viommu_event {
 #define to_viommu_domain(domain)	\
 	container_of(domain, struct viommu_domain, domain)
 
+#define VIRTIO_FIELD_PREP(_mask, _shift, _val)			\
+	({							\
+		(((_val) << VIRTIO_IOMMU_PGTF_ARM_ ## _shift) &	\
+		 (VIRTIO_IOMMU_PGTF_ARM_ ## _mask <<		\
+		  VIRTIO_IOMMU_PGTF_ARM_ ## _shift));		\
+	})
+
 static int viommu_get_req_errno(void *buf, size_t len)
 {
 	struct virtio_iommu_req_tail *tail = buf + len - sizeof(*tail);
@@ -897,6 +904,76 @@ static int viommu_simple_attach(struct viommu_domain *vdomain,
 	return ret;
 }
 
+static int viommu_config_arm_pgt(struct viommu_endpoint *vdev,
+				 struct io_pgtable_cfg *cfg,
+				 struct virtio_iommu_req_attach_pgt_arm *req,
+				 u64 *asid)
+{
+	int id;
+	struct virtio_iommu_probe_table_format *pgtf = (void *)vdev->pgtf;
+	typeof(&cfg->arm_lpae_s1_cfg.tcr) tcr = &cfg->arm_lpae_s1_cfg.tcr;
+	u64 __tcr;
+
+	if (pgtf->asid_bits != 8 && pgtf->asid_bits != 16)
+		return -EINVAL;
+
+	id = ida_simple_get(&asid_ida, 1, 1 << pgtf->asid_bits, GFP_KERNEL);
+	if (id < 0)
+		return -ENOMEM;
+
+	__tcr = VIRTIO_FIELD_PREP(T0SZ_MASK, T0SZ_SHIFT, tcr->tsz) |
+		VIRTIO_FIELD_PREP(IRGN0_MASK, IRGN0_SHIFT, tcr->irgn) |
+		VIRTIO_FIELD_PREP(ORGN0_MASK, ORGN0_SHIFT, tcr->orgn) |
+		VIRTIO_FIELD_PREP(SH0_MASK, SH0_SHIFT, tcr->sh) |
+		VIRTIO_FIELD_PREP(TG0_MASK, TG0_SHIFT, tcr->tg) |
+		VIRTIO_IOMMU_PGTF_ARM_EPD1 | VIRTIO_IOMMU_PGTF_ARM_HPD0 |
+		VIRTIO_IOMMU_PGTF_ARM_HPD1;
+
+	req->format	= cpu_to_le16(VIRTIO_IOMMU_FOMRAT_PGTF_ARM_LPAE);
+	req->ttbr	= cpu_to_le64(cfg->arm_lpae_s1_cfg.ttbr);
+	req->tcr	= cpu_to_le64(__tcr);
+	req->mair	= cpu_to_le64(cfg->arm_lpae_s1_cfg.mair);
+	req->asid	= cpu_to_le16(id);
+
+	*asid = id;
+	return 0;
+}
+
+static int viommu_attach_pgtable(struct viommu_endpoint *vdev,
+				 struct viommu_domain *vdomain,
+				 enum io_pgtable_fmt fmt,
+				 struct io_pgtable_cfg *cfg,
+				 u64 *asid)
+{
+	int ret;
+	int i, eid;
+
+	struct virtio_iommu_req_attach_table req = {
+		.head.type	= VIRTIO_IOMMU_T_ATTACH_TABLE,
+		.domain		= cpu_to_le32(vdomain->id),
+	};
+
+	switch (fmt) {
+	case ARM_64_LPAE_S1:
+		ret = viommu_config_arm_pgt(vdev, cfg, (void *)&req, asid);
+		if (ret)
+			return ret;
+		break;
+	default:
+		WARN_ON(1);
+		return -EINVAL;
+	}
+
+	vdev_for_each_id(i, eid, vdev) {
+		req.endpoint = cpu_to_le32(eid);
+		ret = viommu_send_req_sync(vdomain->viommu, &req, sizeof(req));
+		if (ret)
+			return ret;
+	}
+
+	return 0;
+}
+
 static int viommu_teardown_pgtable(struct viommu_domain *vdomain)
 {
 	struct iommu_vendor_psdtable_cfg *pst_cfg;
@@ -972,32 +1049,42 @@ static int viommu_setup_pgtable(struct viommu_endpoint *vdev,
 	if (!ops)
 		return -ENOMEM;
 
-	pst_cfg = &tbl->cfg;
-	cfgi = &pst_cfg->vendor.cfg;
-	id = ida_simple_get(&asid_ida, 1, 1 << desc->asid_bits, GFP_KERNEL);
-	if (id < 0) {
-		ret = id;
-		goto err_free_pgtable;
+	if (!tbl) {
+		/* No PASID support, send attach_table */
+		ret = viommu_attach_pgtable(vdev, vdomain, fmt, &cfg,
+					    &vdomain->mm.archid);
+		if (ret)
+			goto err_free_pgtable;
+	} else {
+		pst_cfg = &tbl->cfg;
+		cfgi = &pst_cfg->vendor.cfg;
+		id = ida_simple_get(&asid_ida, 1, 1 << desc->asid_bits, GFP_KERNEL);
+		if (id < 0) {
+			ret = id;
+			goto err_free_pgtable;
+		}
+
+		asid = id;
+		ret = iommu_psdtable_prepare(tbl, pst_cfg, &cfg, asid);
+		if (ret)
+			goto err_free_asid;
+
+		/*
+		 * Strange to setup an op here?
+		 * cd-lib is the actual user of sync op, and therefore the
+		 * cd-lib consumer drivers should assign this sync/maintenance
+		 * ops as per need.
+		 */
+		tbl->ops->sync = viommu_flush_pasid;
+
+		/* Right now only PASID 0 supported */
+		ret = iommu_psdtable_write(tbl, pst_cfg, 0, &cfgi->s1_cfg->cd);
+		if (ret)
+			goto err_free_asid;
+
+		vdomain->mm.ops = ops;
 	}
 
-	asid = id;
-	ret = iommu_psdtable_prepare(tbl, pst_cfg, &cfg, asid);
-	if (ret)
-		goto err_free_asid;
-
-	/*
-	 * Strange to setup an op here?
-	 * cd-lib is the actual user of sync op, and therefore the platform
-	 * drivers should assign this sync/maintenance ops as per need.
-	 */
-	tbl->ops->sync = viommu_flush_pasid;
-
-	/* Right now only PASID 0 supported ?? */
-	ret = iommu_psdtable_write(tbl, pst_cfg, 0, &cfgi->s1_cfg->cd);
-	if (ret)
-		goto err_free_asid;
-
-	vdomain->mm.ops = ops;
 	dev_dbg(vdev->dev, "using page table format 0x%x\n", fmt);
 
 	return 0;

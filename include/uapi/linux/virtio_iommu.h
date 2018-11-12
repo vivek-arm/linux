@@ -116,6 +116,36 @@ struct virtio_iommu_req_attach_pst_arm {
 	struct virtio_iommu_req_tail		tail;
 };
 
+/* TCR_EL1 fields from Arm LPAE format */
+#define VIRTIO_IOMMU_PGTF_ARM_HPD1		(1ULL << 42)
+#define VIRTIO_IOMMU_PGTF_ARM_HPD0		(1ULL << 41)
+#define VIRTIO_IOMMU_PGTF_ARM_EPD1		(1 << 23)
+
+#define VIRTIO_IOMMU_PGTF_ARM_TG0_SHIFT		14
+#define VIRTIO_IOMMU_PGTF_ARM_TG0_MASK		0x3
+#define VIRTIO_IOMMU_PGTF_ARM_SH0_SHIFT		12
+#define VIRTIO_IOMMU_PGTF_ARM_SH0_MASK		0x3
+#define VIRTIO_IOMMU_PGTF_ARM_ORGN0_SHIFT	10
+#define VIRTIO_IOMMU_PGTF_ARM_ORGN0_MASK	0x3
+#define VIRTIO_IOMMU_PGTF_ARM_IRGN0_SHIFT	8
+#define VIRTIO_IOMMU_PGTF_ARM_IRGN0_MASK	0x3
+#define VIRTIO_IOMMU_PGTF_ARM_T0SZ_SHIFT	0
+#define VIRTIO_IOMMU_PGTF_ARM_T0SZ_MASK		0x3f
+
+/* Arm LPAE Page Table Descriptor */
+struct virtio_iommu_req_attach_pgt_arm {
+	struct virtio_iommu_req_head            head;
+	__le32                                  domain;
+	__le32                                  endpoint;
+	__le16                                  format;
+	__le16                                  asid;
+	__le64					tcr;
+	__le64					ttbr;
+	__le64					mair;
+	__u8					reserved[28];
+	struct virtio_iommu_req_tail		tail;
+};
+
 #define VIRTIO_IOMMU_MAP_F_READ			(1 << 0)
 #define VIRTIO_IOMMU_MAP_F_WRITE		(1 << 1)
 #define VIRTIO_IOMMU_MAP_F_MMIO			(1 << 2)
