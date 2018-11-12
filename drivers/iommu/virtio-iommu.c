@@ -13,6 +13,7 @@
 #include <linux/freezer.h>
 #include <linux/interval_tree.h>
 #include <linux/iommu.h>
+#include <linux/io-pgtable.h>
 #include <linux/module.h>
 #include <linux/of_iommu.h>
 #include <linux/of_platform.h>
@@ -63,6 +64,8 @@ struct viommu_mapping {
 };
 
 struct viommu_mm {
+	int				pasid;
+	u64				archid;
 	struct io_pgtable_ops		*ops;
 	struct viommu_domain		*domain;
 };
@@ -690,6 +693,98 @@ static void viommu_event_handler(struct virtqueue *vq)
 	}
 
 	virtqueue_kick(vq);
+}
+
+/* PASID and pgtable APIs */
+
+static void __viommu_flush_pasid_tlb_all(struct viommu_domain *vdomain,
+					 int pasid, u64 arch_id, int type)
+{
+	struct virtio_iommu_req_invalidate req = {
+		.head.type	= VIRTIO_IOMMU_T_INVALIDATE,
+		.inv_gran	= cpu_to_le32(VIRTIO_IOMMU_INVAL_G_PASID),
+		.flags		= cpu_to_le32(VIRTIO_IOMMU_INVAL_F_PASID),
+		.inv_type	= cpu_to_le32(type),
+
+		.domain		= cpu_to_le32(vdomain->id),
+		.pasid		= cpu_to_le32(pasid),
+		.archid		= cpu_to_le64(arch_id),
+	};
+
+	if (viommu_send_req_sync(vdomain->viommu, &req, sizeof(req)))
+		pr_debug("could not send invalidate request\n");
+}
+
+static void viommu_flush_tlb_add(struct iommu_iotlb_gather *gather,
+				 unsigned long iova, size_t granule,
+				 void *cookie)
+{
+	struct viommu_mm *viommu_mm = cookie;
+	struct viommu_domain *vdomain = viommu_mm->domain;
+	struct iommu_domain *domain = &vdomain->domain;
+
+	iommu_iotlb_gather_add_page(domain, gather, iova, granule);
+}
+
+static void viommu_flush_tlb_walk(unsigned long iova, size_t size,
+				  size_t granule, void *cookie)
+{
+	struct viommu_mm *viommu_mm = cookie;
+	struct viommu_domain *vdomain = viommu_mm->domain;
+	struct virtio_iommu_req_invalidate req = {
+		.head.type	= VIRTIO_IOMMU_T_INVALIDATE,
+		.inv_gran	= cpu_to_le32(VIRTIO_IOMMU_INVAL_G_VA),
+		.inv_type	= cpu_to_le32(VIRTIO_IOMMU_INV_T_IOTLB),
+		.flags		= cpu_to_le32(VIRTIO_IOMMU_INVAL_F_ARCHID),
+
+		.domain		= cpu_to_le32(vdomain->id),
+		.pasid		= cpu_to_le32(viommu_mm->pasid),
+		.archid		= cpu_to_le64(viommu_mm->archid),
+		.virt_start	= cpu_to_le64(iova),
+		.nr_pages	= cpu_to_le64(size / granule),
+		.granule	= ilog2(granule),
+	};
+
+	if (viommu_add_req(vdomain->viommu, &req, sizeof(req)))
+		pr_debug("could not add invalidate request\n");
+}
+
+static void viommu_flush_tlb_all(void *cookie)
+{
+	struct viommu_mm *viommu_mm = cookie;
+
+	if (!viommu_mm->archid)
+		return;
+
+	__viommu_flush_pasid_tlb_all(viommu_mm->domain, viommu_mm->pasid,
+				     viommu_mm->archid,
+				     VIRTIO_IOMMU_INV_T_IOTLB);
+}
+
+static struct iommu_flush_ops viommu_flush_ops = {
+	.tlb_flush_all		= viommu_flush_tlb_all,
+	.tlb_flush_walk		= viommu_flush_tlb_walk,
+	.tlb_add_page		= viommu_flush_tlb_add,
+};
+
+static void viommu_flush_pasid(void *cookie, int pasid, bool leaf)
+{
+	struct viommu_domain *vdomain = cookie;
+	struct virtio_iommu_req_invalidate req = {
+		.head.type	= VIRTIO_IOMMU_T_INVALIDATE,
+		.inv_gran	= cpu_to_le32(VIRTIO_IOMMU_INVAL_G_PASID),
+		.inv_type	= cpu_to_le32(VIRTIO_IOMMU_INV_T_PASID),
+		.flags		= cpu_to_le32(VIRTIO_IOMMU_INVAL_F_PASID),
+
+		.domain		= cpu_to_le32(vdomain->id),
+		.pasid		= cpu_to_le32(pasid),
+	};
+
+	if (leaf)
+		req.flags	|= cpu_to_le32(VIRTIO_IOMMU_INVAL_F_LEAF);
+
+	if (viommu_send_req_sync(vdomain->viommu, &req, sizeof(req)))
+		pr_debug("could not send invalidate request\n");
 }
 
 /* IOMMU API */
