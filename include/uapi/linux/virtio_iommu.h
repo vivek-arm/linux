@@ -290,19 +290,30 @@ struct virtio_iommu_req_invalidate {
 #define VIRTIO_IOMMU_FAULT_R_UNKNOWN		0
 #define VIRTIO_IOMMU_FAULT_R_DOMAIN		1
 #define VIRTIO_IOMMU_FAULT_R_MAPPING		2
+#define VIRTIO_IOMMU_FAULT_R_WALK_EABT		3
+#define VIRTIO_IOMMU_FAULT_R_PTE_FETCH		4
+#define VIRTIO_IOMMU_FAULT_R_PERMISSION		5
+#define VIRTIO_IOMMU_FAULT_R_ACCESS		6
+#define VIRTIO_IOMMU_FAULT_R_OOR_ADDRESS	7
 
 #define VIRTIO_IOMMU_FAULT_F_READ		(1 << 0)
 #define VIRTIO_IOMMU_FAULT_F_WRITE		(1 << 1)
 #define VIRTIO_IOMMU_FAULT_F_EXEC		(1 << 2)
 #define VIRTIO_IOMMU_FAULT_F_ADDRESS		(1 << 8)
 
+#define VIRTIO_IOMMU_FAULT_F_DMA_UNRECOV	1
+#define VIRTIO_IOMMU_FAULT_F_PAGE_REQ		2
+
 struct virtio_iommu_fault {
 	__u8					reason;
-	__u8					reserved[3];
+	__le16					flt_type;
+	__u8					reserved;
 	__le32					flags;
 	__le32					endpoint;
 	__u8					reserved2[4];
 	__le64					address;
+	__le32					pasid;
+	__u8					reserved3[4];
 };
 
 #endif

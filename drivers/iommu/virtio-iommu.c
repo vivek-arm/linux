@@ -652,9 +652,16 @@ static int viommu_fault_handler(struct viommu_dev *viommu,
 	char *reason_str;
 
 	u8 reason	= fault->reason;
+	u16 type	= fault->flt_type;
 	u32 flags	= le32_to_cpu(fault->flags);
 	u32 endpoint	= le32_to_cpu(fault->endpoint);
 	u64 address	= le64_to_cpu(fault->address);
+	u32 pasid	= le32_to_cpu(fault->pasid);
+
+	if (type == VIRTIO_IOMMU_FAULT_F_PAGE_REQ) {
+		dev_info(viommu->dev, "Page request fault - unhandled\n");
+		return 0;
+	}
 
 	switch (reason) {
 	case VIRTIO_IOMMU_FAULT_R_DOMAIN:
@@ -662,6 +669,21 @@ static int viommu_fault_handler(struct viommu_dev *viommu,
 		break;
 	case VIRTIO_IOMMU_FAULT_R_MAPPING:
 		reason_str = "page";
+		break;
+	case VIRTIO_IOMMU_FAULT_R_WALK_EABT:
+		reason_str = "page walk external abort";
+		break;
+	case VIRTIO_IOMMU_FAULT_R_PTE_FETCH:
+		reason_str = "pte fetch";
+		break;
+	case VIRTIO_IOMMU_FAULT_R_PERMISSION:
+		reason_str = "permission";
+		break;
+	case VIRTIO_IOMMU_FAULT_R_ACCESS:
+		reason_str = "access";
+		break;
+	case VIRTIO_IOMMU_FAULT_R_OOR_ADDRESS:
+		reason_str = "output address";
 		break;
 	case VIRTIO_IOMMU_FAULT_R_UNKNOWN:
 	default:
@@ -671,8 +693,9 @@ static int viommu_fault_handler(struct viommu_dev *viommu,
 
 	/* TODO: find EP by ID and report_iommu_fault */
 	if (flags & VIRTIO_IOMMU_FAULT_F_ADDRESS)
-		dev_err_ratelimited(viommu->dev, "%s fault from EP %u at %#llx [%s%s%s]\n",
-				    reason_str, endpoint, address,
+		dev_err_ratelimited(viommu->dev,
+				    "%s fault from EP %u PASID %u at %#llx [%s%s%s]\n",
+				    reason_str, endpoint, pasid, address,
 				    flags & VIRTIO_IOMMU_FAULT_F_READ ? "R" : "",
 				    flags & VIRTIO_IOMMU_FAULT_F_WRITE ? "W" : "",
 				    flags & VIRTIO_IOMMU_FAULT_F_EXEC ? "X" : "");
