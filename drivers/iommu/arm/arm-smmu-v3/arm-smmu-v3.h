@@ -784,6 +784,9 @@ extern struct arm_smmu_ctx_desc quiet_cd;
 
 int arm_smmu_write_ctx_desc(struct arm_smmu_domain *smmu_domain, int ssid,
 			    struct arm_smmu_ctx_desc *cd);
+int arm_smmu_alloc_cd_tables(struct arm_smmu_domain *smmu_domain);
+void arm_smmu_free_cd_tables(struct arm_smmu_domain *smmu_domain);
+void arm_smmu_sync_cd(struct arm_smmu_domain *smmu_domain, int ssid, bool leaf);
 void arm_smmu_tlb_inv_asid(struct arm_smmu_device *smmu, u16 asid);
 bool arm_smmu_free_asid(struct arm_smmu_ctx_desc *cd);
 int arm_smmu_atc_inv_domain(struct arm_smmu_domain *smmu_domain, int ssid,
