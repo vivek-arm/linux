@@ -11,6 +11,7 @@
 #include "arm-smmu-v3.h"
 #include "../../iommu-sva-lib.h"
 #include "../../io-pgtable-arm.h"
+#include "../../iommu-pasid-table.h"
 
 struct arm_smmu_mmu_notifier {
 	struct mmu_notifier		mn;
@@ -48,6 +49,7 @@ arm_smmu_share_asid(struct mm_struct *mm, u16 asid)
 	struct arm_smmu_ctx_desc *cd;
 	struct arm_smmu_device *smmu;
 	struct arm_smmu_domain *smmu_domain;
+	struct iommu_pasid_table *tbl;
 
 	cd = xa_load(&arm_smmu_asid_xa, asid);
 	if (!cd)
@@ -63,6 +65,7 @@ arm_smmu_share_asid(struct mm_struct *mm, u16 asid)
 
 	smmu_domain = container_of(cd, struct arm_smmu_domain, s1_cfg.cd);
 	smmu = smmu_domain->smmu;
+	tbl = smmu_domain->tbl;
 
 	ret = xa_alloc(&arm_smmu_asid_xa, &new_asid, cd,
 		       XA_LIMIT(1, (1 << smmu->asid_bits) - 1), GFP_KERNEL);
@@ -79,7 +82,9 @@ arm_smmu_share_asid(struct mm_struct *mm, u16 asid)
 	 * be some overlap between use of both ASIDs, until we invalidate the
 	 * TLB.
 	 */
-	arm_smmu_write_ctx_desc(smmu_domain, 0, cd);
+	ret = iommu_psdtable_write(tbl, &tbl->cfg, 0, cd);
+	if (ret)
+		return ERR_PTR(-ENOSYS);
 
 	/* Invalidate TLB entries previously associated with that context */
 	arm_smmu_tlb_inv_asid(smmu, asid);
@@ -191,6 +196,7 @@ static void arm_smmu_mm_release(struct mmu_notifier *mn, struct mm_struct *mm)
 {
 	struct arm_smmu_mmu_notifier *smmu_mn = mn_to_smmu(mn);
 	struct arm_smmu_domain *smmu_domain = smmu_mn->domain;
+	struct iommu_pasid_table *tbl = smmu_domain->tbl;
 
 	mutex_lock(&sva_lock);
 	if (smmu_mn->cleared) {
@@ -202,7 +208,7 @@ static void arm_smmu_mm_release(struct mmu_notifier *mn, struct mm_struct *mm)
 	 * DMA may still be running. Keep the cd valid to avoid C_BAD_CD events,
 	 * but disable translation.
 	 */
-	arm_smmu_write_ctx_desc(smmu_domain, mm->pasid, &quiet_cd);
+	iommu_psdtable_write(tbl, &tbl->cfg, mm->pasid, &quiet_cd);
 
 	arm_smmu_tlb_inv_asid(smmu_domain->smmu, smmu_mn->cd->asid);
 	arm_smmu_atc_inv_domain(smmu_domain, mm->pasid, 0, 0);
@@ -230,6 +236,7 @@ arm_smmu_mmu_notifier_get(struct arm_smmu_domain *smmu_domain,
 	int ret;
 	struct arm_smmu_ctx_desc *cd;
 	struct arm_smmu_mmu_notifier *smmu_mn;
+	struct iommu_pasid_table *tbl = smmu_domain->tbl;
 
 	list_for_each_entry(smmu_mn, &smmu_domain->mmu_notifiers, list) {
 		if (smmu_mn->mn.mm == mm) {
@@ -259,7 +266,7 @@ arm_smmu_mmu_notifier_get(struct arm_smmu_domain *smmu_domain,
 		goto err_free_cd;
 	}
 
-	ret = arm_smmu_write_ctx_desc(smmu_domain, mm->pasid, cd);
+	ret = iommu_psdtable_write(tbl, &tbl->cfg, mm->pasid, cd);
 	if (ret)
 		goto err_put_notifier;
 
@@ -279,12 +286,13 @@ static void arm_smmu_mmu_notifier_put(struct arm_smmu_mmu_notifier *smmu_mn)
 	struct mm_struct *mm = smmu_mn->mn.mm;
 	struct arm_smmu_ctx_desc *cd = smmu_mn->cd;
 	struct arm_smmu_domain *smmu_domain = smmu_mn->domain;
+	struct iommu_pasid_table *tbl = smmu_domain->tbl;
 
 	if (!refcount_dec_and_test(&smmu_mn->refs))
 		return;
 
 	list_del(&smmu_mn->list);
-	arm_smmu_write_ctx_desc(smmu_domain, mm->pasid, NULL);
+	iommu_psdtable_write(tbl, &tbl->cfg, mm->pasid, NULL);
 
 	/*
 	 * If we went through clear(), we've already invalidated, and no

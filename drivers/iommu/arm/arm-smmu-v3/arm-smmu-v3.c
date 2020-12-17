@@ -32,6 +32,7 @@
 #include <linux/amba/bus.h>
 
 #include "arm-smmu-v3.h"
+#include "../../iommu-pasid-table.h"
 
 static bool disable_bypass = true;
 module_param(disable_bypass, bool, 0444);
@@ -894,12 +895,13 @@ void arm_smmu_tlb_inv_asid(struct arm_smmu_device *smmu, u16 asid)
 	arm_smmu_cmdq_issue_sync(smmu);
 }
 
-void arm_smmu_sync_cd(struct arm_smmu_domain *smmu_domain, int ssid, bool leaf)
+void arm_smmu_sync_cd(void *cookie, int ssid, bool leaf)
 {
 	size_t i;
 	unsigned long flags;
 	struct arm_smmu_master *master;
 	struct arm_smmu_cmdq_batch cmds = {};
+	struct arm_smmu_domain *smmu_domain = cookie;
 	struct arm_smmu_device *smmu = smmu_domain->smmu;
 	struct arm_smmu_cmdq_ent cmd = {
 		.opcode	= CMDQ_OP_CFGI_CD,
@@ -1797,6 +1799,7 @@ static void arm_smmu_domain_free(struct iommu_domain *domain)
 	struct arm_smmu_device *smmu = smmu_domain->smmu;
 	struct arm_smmu_s1_cfg *s1_cfg = &smmu_domain->s1_cfg;
 	struct arm_smmu_s2_cfg *s2_cfg = &smmu_domain->s2_cfg;
+	struct iommu_pasid_table *tbl = smmu_domain->tbl;
 
 	iommu_put_dma_cookie(domain);
 	free_io_pgtable_ops(smmu_domain->pgtbl_ops);
@@ -1806,7 +1809,7 @@ static void arm_smmu_domain_free(struct iommu_domain *domain)
 		/* Prevent SVA from touching the CD while we're freeing it */
 		mutex_lock(&arm_smmu_asid_lock);
 		if (s1_cfg->cdcfg.cdtab)
-			arm_smmu_free_cd_tables(smmu_domain);
+			iommu_psdtable_free(tbl, &tbl->cfg);
 		arm_smmu_free_asid(&s1_cfg->cd);
 		mutex_unlock(&arm_smmu_asid_lock);
 	}
@@ -1826,7 +1829,8 @@ static int arm_smmu_domain_finalise_s1(struct arm_smmu_domain *smmu_domain,
 	u32 asid;
 	struct arm_smmu_device *smmu = smmu_domain->smmu;
 	struct arm_smmu_s1_cfg *cfg = &smmu_domain->s1_cfg;
-	typeof(&pgtbl_cfg->arm_lpae_s1_cfg.tcr) tcr = &pgtbl_cfg->arm_lpae_s1_cfg.tcr;
+	struct iommu_vendor_psdtable_cfg *pst_cfg;
+	struct iommu_pasid_table *tbl;
 
 	refcount_set(&cfg->cd.refs, 1);
 
@@ -1837,29 +1841,40 @@ static int arm_smmu_domain_finalise_s1(struct arm_smmu_domain *smmu_domain,
 	if (ret)
 		goto out_unlock;
 
+	tbl = iommu_register_pasid_table(PASID_TABLE_ARM_SMMU_V3, smmu->dev, smmu_domain);
+	if (!tbl) {
+		ret = -ENOMEM;
+		goto out_free_asid;
+	}
+
+	pst_cfg = &tbl->cfg;
+
+	pst_cfg->iommu_dev = smmu->dev;
+	pst_cfg->fmt = PASID_TABLE_ARM_SMMU_V3;
+	pst_cfg->vendor.cfg.s1_cfg = &smmu_domain->s1_cfg;
+
+	if (smmu->features & ARM_SMMU_FEAT_2_LVL_CDTAB)
+		pst_cfg->vendor.cfg.feat_flag |= ARM_SMMU_FEAT_2_LVL_CDTAB;
+	if (smmu->features & ARM_SMMU_FEAT_STALL_FORCE)
+		pst_cfg->vendor.cfg.feat_flag |= ARM_SMMU_FEAT_STALL_FORCE;
+
 	cfg->s1cdmax = master->ssid_bits;
 
-	ret = arm_smmu_alloc_cd_tables(smmu_domain);
+	smmu_domain->tbl = tbl;
+	ret = iommu_psdtable_alloc(tbl, pst_cfg);
 	if (ret)
 		goto out_free_asid;
 
-	cfg->cd.asid	= (u16)asid;
-	cfg->cd.ttbr	= pgtbl_cfg->arm_lpae_s1_cfg.ttbr;
-	cfg->cd.tcr	= FIELD_PREP(CTXDESC_CD_0_TCR_T0SZ, tcr->tsz) |
-			  FIELD_PREP(CTXDESC_CD_0_TCR_TG0, tcr->tg) |
-			  FIELD_PREP(CTXDESC_CD_0_TCR_IRGN0, tcr->irgn) |
-			  FIELD_PREP(CTXDESC_CD_0_TCR_ORGN0, tcr->orgn) |
-			  FIELD_PREP(CTXDESC_CD_0_TCR_SH0, tcr->sh) |
-			  FIELD_PREP(CTXDESC_CD_0_TCR_IPS, tcr->ips) |
-			  CTXDESC_CD_0_TCR_EPD1 | CTXDESC_CD_0_AA64;
-	cfg->cd.mair	= pgtbl_cfg->arm_lpae_s1_cfg.mair;
+	ret = iommu_psdtable_prepare(tbl, pst_cfg, pgtbl_cfg, asid);
+	if (ret)
+		goto out_free_cd_tables;
 
 	/*
 	 * Note that this will end up calling arm_smmu_sync_cd() before
 	 * the master has been added to the devices list for this domain.
 	 * This isn't an issue because the STE hasn't been installed yet.
 	 */
-	ret = arm_smmu_write_ctx_desc(smmu_domain, 0, &cfg->cd);
+	ret = iommu_psdtable_write(tbl, pst_cfg, 0, &cfg->cd);
 	if (ret)
 		goto out_free_cd_tables;
 
@@ -1867,7 +1882,7 @@ static int arm_smmu_domain_finalise_s1(struct arm_smmu_domain *smmu_domain,
 	return 0;
 
 out_free_cd_tables:
-	arm_smmu_free_cd_tables(smmu_domain);
+	iommu_psdtable_free(tbl, pst_cfg);
 out_free_asid:
 	arm_smmu_free_asid(&cfg->cd);
 out_unlock:

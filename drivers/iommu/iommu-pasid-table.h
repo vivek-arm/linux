@@ -123,12 +123,18 @@ static inline int iommu_psdtable_sync(struct iommu_pasid_table *tbl,
 	return 0;
 }
 
-/* A placeholder to register vendor specific pasid layer */
+struct iommu_pasid_table *arm_smmu_register_cd_table(struct device *dev,
+						     void *cookie);
+
+/* Register vendor specific pasid table management layer */
 static inline struct iommu_pasid_table *
 iommu_register_pasid_table(enum pasid_table_fmt fmt,
 			   struct device *dev, void *cookie)
 {
-	return NULL;
+	if (fmt == PASID_TABLE_ARM_SMMU_V3)
+		return arm_smmu_register_cd_table(dev, cookie);
+	else
+		return NULL;
 }
 
 #endif /* __IOMMU_PASID_TABLE_H */
