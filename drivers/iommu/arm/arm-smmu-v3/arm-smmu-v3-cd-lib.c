@@ -55,6 +55,9 @@ static __le64 *arm_smmu_get_cd_ptr(struct iommu_vendor_psdtable_cfg *pst_cfg,
 		if (arm_smmu_alloc_cd_leaf_table(dev, l1_desc))
 			return NULL;
 
+		if (s1cfg->s1fmt == STRTAB_STE_0_S1FMT_LINEAR)
+			pst_cfg->base = l1_desc->l2ptr_dma;
+
 		l1ptr = cdcfg->cdtab + idx * CTXDESC_L1_DESC_DWORDS;
 		arm_smmu_write_cd_l1_desc(l1ptr, l1_desc);
 		/* An invalid L1CD can be cached */
@@ -210,6 +213,9 @@ static int arm_smmu_alloc_cd_tables(struct iommu_vendor_psdtable_cfg *pst_cfg)
 		ret = -ENOMEM;
 		goto err_free_l1;
 	}
+
+	if (s1cfg->s1fmt == STRTAB_STE_0_S1FMT_64K_L2)
+		pst_cfg->base = cdcfg->cdtab_dma;
 
 	return 0;
 
