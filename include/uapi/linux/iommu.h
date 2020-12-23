@@ -323,7 +323,8 @@ struct iommu_gpasid_bind_data {
 #define IOMMU_GPASID_BIND_VERSION_1	1
 	__u32 version;
 #define IOMMU_PASID_FORMAT_INTEL_VTD	1
-#define IOMMU_PASID_FORMAT_LAST		2
+#define IOMMU_PASID_FORMAT_ARM_SMMU_V3	2
+#define IOMMU_PASID_FORMAT_LAST		3
 	__u32 format;
 	__u32 addr_width;
 #define IOMMU_SVA_GPASID_VAL	(1 << 0) /* guest PASID valid */
@@ -410,6 +411,21 @@ struct iommu_nesting_info_vtd {
 };
 
 /*
+ * struct iommu_nesting_info_arm_smmuv3 - Arm SMMU-v3 nesting info.
+ */
+struct iommu_nesting_info_arm_smmuv3 {
+	__u32	flags;
+	__u16	asid_bits;
+
+	/* Arm LPAE page table format as per kernel */
+#define ARM_PGTBL_32_LPAE_S1		(0x0)
+#define ARM_PGTBL_64_LPAE_S1		(0x2)
+	__u8	pgtbl_fmt;
+
+	__u8	padding[9];
+};
+
+/*
  * struct iommu_nesting_info - Information for nesting-capable IOMMU.
  *			       userspace should check it before using
  *			       nesting capability.
@@ -445,11 +461,13 @@ struct iommu_nesting_info_vtd {
  * +---------------+------------------------------------------------------+
  *
  * data struct types defined for @format:
- * +================================+=====================================+
- * | @format                        | data struct                         |
- * +================================+=====================================+
- * | IOMMU_PASID_FORMAT_INTEL_VTD   | struct iommu_nesting_info_vtd       |
- * +--------------------------------+-------------------------------------+
+ * +================================+======================================+
+ * | @format                        | data struct                          |
+ * +================================+======================================+
+ * | IOMMU_PASID_FORMAT_INTEL_VTD   | struct iommu_nesting_info_vtd        |
+ * +---------------+-------------------------------------------------------+
+ * | IOMMU_PASID_FORMAT_ARM_SMMU_V3 | struct iommu_nesting_info_arm_smmuv3 |
+ * +--------------------------------+--------------------------------------+
  *
  */
 struct iommu_nesting_info {
@@ -466,6 +484,7 @@ struct iommu_nesting_info {
 	/* Vendor specific data */
 	union {
 		struct iommu_nesting_info_vtd vtd;
+		struct iommu_nesting_info_arm_smmuv3 smmuv3;
 	} vendor;
 };
 
