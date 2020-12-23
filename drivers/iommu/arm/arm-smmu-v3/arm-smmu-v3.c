@@ -2555,6 +2555,7 @@ static int arm_smmu_domain_nesting_info(struct arm_smmu_domain *smmu_domain,
 					void *data)
 {
 	struct iommu_nesting_info *info = (struct iommu_nesting_info *)data;
+	struct arm_smmu_device *smmu = smmu_domain->smmu;
 	unsigned int size;
 
 	if (!info || smmu_domain->stage != ARM_SMMU_DOMAIN_NESTED)
@@ -2571,9 +2572,20 @@ static int arm_smmu_domain_nesting_info(struct arm_smmu_domain *smmu_domain,
 		return 0;
 	}
 
-	/* report an empty iommu_nesting_info for now */
-	memset(info, 0x0, size);
+	/* Update the nesting info as required for stage1 page tables */
+	info->addr_width = smmu->ias;
+	info->format = IOMMU_PASID_FORMAT_ARM_SMMU_V3;
+	info->features = IOMMU_NESTING_FEAT_BIND_PGTBL |
+			 IOMMU_NESTING_FEAT_PAGE_RESP |
+			 IOMMU_NESTING_FEAT_CACHE_INVLD;
+	info->pasid_bits = smmu->ssid_bits;
+	info->vendor.smmuv3.asid_bits = smmu->asid_bits;
+	info->vendor.smmuv3.pgtbl_fmt = ARM_64_LPAE_S1;
+	memset(&info->padding, 0x0, 12);
+	memset(&info->vendor.smmuv3.padding, 0x0, 9);
+
 	info->argsz = size;
+
 	return 0;
 }
 
