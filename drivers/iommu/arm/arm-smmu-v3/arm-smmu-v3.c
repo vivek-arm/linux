@@ -1870,6 +1870,13 @@ static int arm_smmu_domain_finalise_s1(struct arm_smmu_domain *smmu_domain,
 		goto out_free_cd_tables;
 
 	/*
+	 * Strange to setup an op here?
+	 * cd-lib is the actual user of sync op, and therefore the platform
+	 * drivers should assign this sync/maintenance ops as per need.
+	 */
+	tbl->ops->sync = arm_smmu_sync_cd;
+
+	/*
 	 * Note that this will end up calling arm_smmu_sync_cd() before
 	 * the master has been added to the devices list for this domain.
 	 * This isn't an issue because the STE hasn't been installed yet.

@@ -265,7 +265,6 @@ struct iommu_vendor_psdtable_ops arm_cd_table_ops = {
 	.free	 = arm_smmu_free_cd_tables,
 	.prepare = arm_smmu_prepare_cd,
 	.write	 = arm_smmu_write_ctx_desc,
-	.sync	 = arm_smmu_sync_cd,
 };
 
 struct iommu_pasid_table *arm_smmu_register_cd_table(struct device *dev,
