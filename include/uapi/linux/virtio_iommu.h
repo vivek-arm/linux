@@ -169,7 +169,10 @@ struct virtio_iommu_probe_pasid_size {
 struct virtio_iommu_probe_table_format {
 	struct virtio_iommu_probe_property	head;
 	__le16					format;
-	__u8					reserved[2];
+	__le16					asid_bits;
+
+	__le32					flags;
+	__u8					reserved[4];
 };
 
 struct virtio_iommu_req_probe {
